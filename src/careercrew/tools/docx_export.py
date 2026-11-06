@@ -101,7 +101,7 @@ def generate_resume_docx(
         p_contact.alignment = WD_ALIGN_PARAGRAPH.CENTER
         p_contact.paragraph_format.space_before = Pt(0)
         p_contact.paragraph_format.space_after = Pt(8)
-        run_contact = p_contact.add_run("  •  ".join(contact_parts))
+        run_contact = p_contact.add_run(" | ".join(contact_parts))
         run_contact.font.name = font_name
         run_contact.font.size = Pt(9)
         run_contact.font.color.rgb = RGBColor(100, 116, 139)

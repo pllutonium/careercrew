@@ -20,13 +20,13 @@ echo -e "${BLUE}======================================================${NC}"
 CURRENT_BRANCH=$(git branch --show-current 2>/dev/null | tr -d '\r' || git rev-parse --abbrev-ref HEAD 2>/dev/null | tr -d '\r' || echo "UNKNOWN")
 echo -e "\n[1/5] Checking Git Branch Isolation..."
 if [ "$CURRENT_BRANCH" = "main" ] || [ "$CURRENT_BRANCH" = "master" ]; then
-    echo -e "${RED}[ERROR] Direct commits to '$CURRENT_BRANCH' are strictly forbidden!${NC}"
+    echo -e "${RED}[ERROR] Direct commits to '$CURRENT_BRANCH' are strictly forbidden.${NC}"
     echo -e "Please switch to your designated feature branch: 'feat/member4-resume-writer'"
     exit 1
 elif [ "$CURRENT_BRANCH" != "feat/member4-resume-writer" ]; then
     echo -e "${YELLOW}[WARNING] Current branch is '$CURRENT_BRANCH' (expected 'feat/member4-resume-writer').${NC}"
 else
-    echo -e "${GREEN}[OK] Working on isolated feature branch: $CURRENT_BRANCH${NC}"
+    echo -e "${GREEN}[PASS] Working on isolated feature branch: $CURRENT_BRANCH${NC}"
 fi
 
 # 2. Code Quality & Formatting Gate (Ruff)
@@ -36,7 +36,7 @@ if command -v uv &>/dev/null; then
 else
     python -m ruff check .
 fi
-echo -e "${GREEN}[OK] All Ruff checks passed!${NC}"
+echo -e "${GREEN}[PASS] All Ruff checks passed.${NC}"
 
 # 3. Deterministic Test Suite Gate (Pytest)
 echo -e "\n[3/5] Running Writer Unit Tests..."
@@ -45,7 +45,7 @@ if command -v uv &>/dev/null; then
 else
     python -m pytest tests/unit/test_writer.py -v
 fi
-echo -e "${GREEN}[OK] All unit tests passed!${NC}"
+echo -e "${GREEN}[PASS] All unit tests passed.${NC}"
 
 # 4. Directory Ownership & Teammate Boundary Check
 echo -e "\n[4/5] Enforcing Member 4 Directory Ownership Boundaries..."
@@ -62,18 +62,17 @@ FORBIDDEN_TEAMS=("supervisor" "profile" "job_intel" "critic" "interview")
 for file in $STAGED_FILES; do
     for teammate in "${FORBIDDEN_TEAMS[@]}"; do
         if [[ "$file" == *"$teammate"* ]]; then
-            echo -e "${RED}[ERROR] Violation: File '$file' belongs to teammate '$teammate'.${NC}"
+            echo -e "${RED}[ERROR] Boundary violation: File '$file' belongs to teammate '$teammate'.${NC}"
             FORBIDDEN_FOUND=1
         fi
     done
 done
 
 if [ "$FORBIDDEN_FOUND" -ne 0 ]; then
-    echo -e "${RED}[ABORT] You are attempting to touch teammate-owned files!${NC}"
-    echo -e "Member 4 ownership is restricted to: writer agent, docx export tools, resume schemas, docker, and writer tests."
+    echo -e "${RED}[ABORT] Member 4 ownership is restricted to: writer agent, docx export tools, resume schemas, docker, and writer tests.${NC}"
     exit 1
 fi
-echo -e "${GREEN}[OK] No teammate files violated.${NC}"
+echo -e "${GREEN}[PASS] No teammate files violated.${NC}"
 
 # 5. Secrets & Hygiene Safeguard Check
 echo -e "\n[5/5] Checking for Secrets & Hygiene Safeguards..."
@@ -88,15 +87,15 @@ for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
 done
 
 if [ "$SECRETS_FOUND" -ne 0 ]; then
-    echo -e "${RED}[ABORT] Commit contains potential API keys or secrets!${NC}"
+    echo -e "${RED}[ABORT] Staged diff contains sensitive credentials or API keys.${NC}"
     exit 1
 fi
-echo -e "${GREEN}[OK] Clean working directory - zero secrets detected.${NC}"
+echo -e "${GREEN}[PASS] Clean working directory. Zero secrets detected.${NC}"
 
 echo -e "\n${BLUE}======================================================${NC}"
-echo -e "${GREEN}  Pre-flight verification PASSED successfully!        ${NC}"
+echo -e "${GREEN}  Pre-flight verification PASSED successfully.        ${NC}"
 echo -e "${BLUE}======================================================${NC}"
 echo -e "\nRecommended Conventional Commit commands:"
 echo -e "  git add ."
-echo -e "  git commit -m \"feat(writer): implement Resume Writer Agent, ATS docx export, delta-repair & tests\""
+echo -e "  git commit -m \"refactor(writer): remove emojis and standardize professional logging and docstrings\""
 echo -e "  git push -u origin $CURRENT_BRANCH\n"

@@ -13,32 +13,32 @@ Write-Host "======================================================" -ForegroundC
 $currentBranch = (git branch --show-current).Trim()
 Write-Host "`n[1/5] Checking Git Branch Isolation..." -ForegroundColor Yellow
 if ($currentBranch -eq "main" -or $currentBranch -eq "master") {
-    Write-Host "[ERROR] Direct commits to '$currentBranch' are strictly forbidden!" -ForegroundColor Red
+    Write-Host "[ERROR] Direct commits to '$currentBranch' are strictly forbidden." -ForegroundColor Red
     Write-Host "Please switch to your designated feature branch: 'feat/member4-resume-writer'" -ForegroundColor Red
     exit 1
 } elseif ($currentBranch -ne "feat/member4-resume-writer") {
     Write-Host "[WARNING] Current branch is '$currentBranch' (expected 'feat/member4-resume-writer')." -ForegroundColor Yellow
 } else {
-    Write-Host "[OK] Working on isolated feature branch: $currentBranch" -ForegroundColor Green
+    Write-Host "[PASS] Working on isolated feature branch: $currentBranch" -ForegroundColor Green
 }
 
 # 2. Code Quality & Formatting Gate (Ruff)
 Write-Host "`n[2/5] Running Ruff Linter & Formatter Validation..." -ForegroundColor Yellow
 python -m ruff check .
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] Ruff validation failed!" -ForegroundColor Red
+    Write-Host "[ERROR] Ruff validation failed." -ForegroundColor Red
     exit 1
 }
-Write-Host "[OK] All Ruff checks passed!" -ForegroundColor Green
+Write-Host "[PASS] All Ruff checks passed." -ForegroundColor Green
 
 # 3. Deterministic Test Suite Gate (Pytest)
 Write-Host "`n[3/5] Running Writer Unit Tests..." -ForegroundColor Yellow
 python -m pytest tests/unit/test_writer.py -v
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] Pytest execution failed!" -ForegroundColor Red
+    Write-Host "[ERROR] Pytest execution failed." -ForegroundColor Red
     exit 1
 }
-Write-Host "[OK] All unit tests passed!" -ForegroundColor Green
+Write-Host "[PASS] All unit tests passed." -ForegroundColor Green
 
 # 4. Directory Ownership & Teammate Boundary Check
 Write-Host "`n[4/5] Enforcing Member 4 Directory Ownership Boundaries..." -ForegroundColor Yellow
@@ -60,11 +60,11 @@ foreach ($file in $stagedFiles) {
 }
 
 if ($violations.Count -gt 0) {
-    Write-Host "[ABORT] You are attempting to touch teammate-owned files:" -ForegroundColor Red
-    $violations | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+    Write-Host "[ABORT] Member 4 ownership is restricted to: writer agent, docx export tools, resume schemas, docker, and writer tests." -ForegroundColor Red
+    $violations | ForEach-Object { Write-Host "  - Violation: $_" -ForegroundColor Red }
     exit 1
 }
-Write-Host "[OK] No teammate files violated." -ForegroundColor Green
+Write-Host "[PASS] No teammate files violated." -ForegroundColor Green
 
 # 5. Secrets & Hygiene Safeguard Check
 Write-Host "`n[5/5] Checking for Secrets & Hygiene Safeguards..." -ForegroundColor Yellow
@@ -80,16 +80,16 @@ foreach ($pattern in $forbiddenPatterns) {
 }
 
 if ($secretDetected) {
-    Write-Host "[ABORT] Staged diff contains sensitive tokens or keys!" -ForegroundColor Red
+    Write-Host "[ABORT] Staged diff contains sensitive credentials or API keys." -ForegroundColor Red
     exit 1
 }
-Write-Host "[OK] Clean working directory - zero secrets detected." -ForegroundColor Green
+Write-Host "[PASS] Clean working directory. Zero secrets detected." -ForegroundColor Green
 
 Write-Host "`n======================================================" -ForegroundColor Cyan
-Write-Host "  Pre-flight verification PASSED successfully!        " -ForegroundColor Green
+Write-Host "  Pre-flight verification PASSED successfully.        " -ForegroundColor Green
 Write-Host "======================================================" -ForegroundColor Cyan
 
 Write-Host "`nRecommended Conventional Commit commands:" -ForegroundColor White
 Write-Host "  git add ." -ForegroundColor Cyan
-Write-Host "  git commit -m `"feat(writer): implement Resume Writer Agent, ATS docx export, delta-repair & tests`"" -ForegroundColor Cyan
+Write-Host "  git commit -m `"refactor(writer): remove emojis and standardize professional logging and docstrings`"" -ForegroundColor Cyan
 Write-Host "  git push -u origin $currentBranch`n" -ForegroundColor Cyan
