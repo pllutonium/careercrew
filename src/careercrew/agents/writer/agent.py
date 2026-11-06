@@ -21,11 +21,11 @@ from careercrew.schemas.resume import (
 class GraphState(TypedDict, total=False):
     """LangGraph shared state contract for CareerCrew workflow."""
 
-    profile: Dict[str, Any]
+    profile: Any
     job: Dict[str, Any]
     gap: Dict[str, Any]
     round: int
-    critique: Optional[Dict[str, Any]]
+    critique: Optional[Any]
     draft: Optional[Union[TailoredResume, Dict[str, Any]]]
     llm: Optional[BaseChatModel]
 
@@ -40,11 +40,16 @@ _jinja_env = Environment(
 
 
 def extract_profile_facts(profile: Any) -> Dict[str, str]:
-    """Recursively harvest all raw factual bullet IDs and their text from the profile.
-
-    Supports arbitrary nested structures produced by upstream agents (Profile Agent, etc.).
-    """
+    """Recursively harvest all raw factual bullet IDs and their text from the profile."""
     facts: Dict[str, str] = {}
+
+    # Handle Pydantic model
+    if hasattr(profile, "model_dump"):
+        data = profile.model_dump()
+    elif isinstance(profile, dict):
+        data = profile
+    else:
+        data = {}
 
     def _walk(node: Any) -> None:
         if isinstance(node, dict):
@@ -63,47 +68,61 @@ def extract_profile_facts(profile: Any) -> Dict[str, str]:
             for item in node:
                 _walk(item)
 
-    _walk(profile)
+    _walk(data)
     return facts
 
 
-def validate_draft(draft: TailoredResume, profile: Dict[str, Any]) -> None:
-    """Deterministic Guardrail: Asserts every bullet has non-empty valid source IDs from profile."""
+def validate_writer_output(draft: TailoredResume, profile: Any) -> None:
+    """Hard Deterministic Verification:
+    - Assert that len(bullet.source_ids) > 0 for every bullet in every section (and summary).
+    - Collect all existing bullet IDs from profile.experiences, profile.projects, etc.
+    - Assert that every string in bullet.source_ids exists in the collected set of valid IDs.
+    - Raise a descriptive ValueError if any ID is hallucinated or missing.
+    """
     profile_facts = extract_profile_facts(profile)
     valid_ids: Set[str] = set(profile_facts.keys())
 
-    # Check executive summary bullet
+    # 1. Validate Executive Summary
     if not draft.summary:
-        raise ValueError("Resume draft is missing an executive summary.")
-    if not draft.summary.source_ids:
-        msg = f"Zero-Fabrication Violation: Summary has empty source_ids: '{draft.summary.text}'"
+        msg = "Deterministic Verification Failed: Resume draft is missing an executive summary."
+        raise ValueError(msg)
+    if not draft.summary.source_ids or len(draft.summary.source_ids) == 0:
+        msg = (
+            f"Deterministic Verification Failed: Executive summary bullet has empty source_ids: "
+            f"'{draft.summary.text}'"
+        )
         raise ValueError(msg)
     for src_id in draft.summary.source_ids:
         if valid_ids and src_id not in valid_ids:
             msg = (
-                f"Zero-Fabrication Violation: Summary references invalid source_id '{src_id}' "
-                f"not found in candidate profile."
+                f"Deterministic Verification Failed: Summary references hallucinated source_id "
+                f"'{src_id}' not found in candidate profile."
             )
             raise ValueError(msg)
 
-    # Check all sections and bullets
-    for _sec_idx, section in enumerate(draft.sections):
-        if not section.bullets:
+    # 2. Validate all Sections and Bullets
+    for sec_idx, section in enumerate(draft.sections):
+        if not section.bullets or len(section.bullets) == 0:
             continue
         for b_idx, bullet in enumerate(section.bullets):
-            if not bullet.source_ids:
+            if not bullet.source_ids or len(bullet.source_ids) == 0:
                 msg = (
-                    f"Zero-Fabrication Violation: Section '{section.section_name}' bullet {b_idx} "
-                    f"has empty source_ids: '{bullet.text}'"
+                    f"Deterministic Verification Failed: Section '{section.section_name}' "
+                    f"bullet {b_idx} has empty source_ids: '{bullet.text}'"
                 )
                 raise ValueError(msg)
             for src_id in bullet.source_ids:
                 if valid_ids and src_id not in valid_ids:
                     msg = (
-                        f"Zero-Fabrication Violation: Section '{section.section_name}' "
-                        f"bullet {b_idx} references invalid source_id '{src_id}'."
+                        f"Deterministic Verification Failed: Section '{section.section_name}' "
+                        f"bullet {b_idx} references hallucinated source_id '{src_id}' "
+                        f"not found in candidate profile."
                     )
                     raise ValueError(msg)
+
+
+# Backwards compatibility alias
+validate_draft = validate_writer_output
 
 
 def get_default_llm() -> BaseChatModel:
@@ -132,7 +151,7 @@ class ResumeWriterAgent:
 
     def generate_initial_draft(
         self,
-        profile: Dict[str, Any],
+        profile: Any,
         job: Dict[str, Any],
         gap: Dict[str, Any],
     ) -> TailoredResume:
@@ -140,7 +159,12 @@ class ResumeWriterAgent:
         system_content = self.system_template.render()
 
         # Enforce compact JSON to stay strictly within 6,000 token budget
-        compact_profile = json.dumps(profile, separators=(",", ":"), ensure_ascii=False)
+        if hasattr(profile, "model_dump"):
+            profile_dict = profile.model_dump()
+        else:
+            profile_dict = profile
+
+        compact_profile = json.dumps(profile_dict, separators=(",", ":"), ensure_ascii=False)
         task_content = self.task_template.render(
             mode="initial",
             job=job,
@@ -154,6 +178,7 @@ class ResumeWriterAgent:
             strict=True,
         )
 
+        # Prompt Caching: Static system instructions first, dynamic data last
         messages = [
             SystemMessage(content=system_content),
             HumanMessage(content=task_content),
@@ -185,43 +210,112 @@ class ResumeWriterAgent:
     def delta_repair(
         self,
         draft: TailoredResume,
-        profile: Dict[str, Any],
-        critique: Dict[str, Any],
+        profile: Any,
+        critique: Any,
     ) -> TailoredResume:
-        """Delta-Repair Algorithm: Preserves supported bullets, isolates unsupported/partial ones,
-        and surgically merges repairs back into the draft.
+        """Delta-Repair Algorithm:
+        1. Inspect critique. If passed, bypass regeneration and return unchanged.
+        2. Inspect critique.claim_checks. Identify bullets flagged as unsupported or partial.
+        3. Keep all supported bullets locked.
+        4. Send prompt with ONLY flagged bullets, their source facts, and Critic feedback.
+        5. Surgically re-integrate repaired bullets into exact section indices without
+           disturbing supported bullets.
         """
+        # 1. Bypass if critique passed
+        is_passed = getattr(critique, "passed", None)
+        if is_passed is None and isinstance(critique, dict):
+            is_passed = critique.get("passed", False)
+
+        if is_passed is True:
+            return draft
+
         profile_facts = extract_profile_facts(profile)
         bullet_map, _ = self._index_draft_bullets(draft)
 
-        # Parse critique bullets
-        critique_bullets = critique.get("bullets", [])
-        if not critique_bullets and isinstance(critique.get("critiques"), list):
-            critique_bullets = critique["critiques"]
+        # 2. Extract claim checks
+        claim_checks = getattr(critique, "claim_checks", None)
+        if claim_checks is None and isinstance(critique, dict):
+            claim_checks = (
+                critique.get("claim_checks")
+                or critique.get("bullets")
+                or critique.get("critiques")
+                or []
+            )
+        elif claim_checks is None:
+            claim_checks = []
 
         flagged_items: List[Dict[str, Any]] = []
 
-        for crit in critique_bullets:
-            status = crit.get("status", "").lower()
+        for chk in claim_checks:
+            # Determine status
+            status = ""
+            if hasattr(chk, "status"):
+                status = str(chk.status or "").lower()
+            elif hasattr(chk, "verdict"):
+                status = str(chk.verdict or "").lower()
+            elif isinstance(chk, dict):
+                status = str(chk.get("status") or chk.get("verdict") or "").lower()
+
+            # Keep supported bullets locked; process only unsupported or partial
             if status in ("unsupported", "partial"):
-                b_id = crit.get("bullet_id")
+                b_id = None
+                if hasattr(chk, "bullet_id"):
+                    b_id = chk.bullet_id
+                elif hasattr(chk, "claim_id"):
+                    b_id = chk.claim_id
+                elif isinstance(chk, dict):
+                    b_id = chk.get("bullet_id") or chk.get("claim_id")
+
                 target_bullet: Optional[TailoredBullet] = None
 
                 if b_id and b_id in bullet_map:
                     target_bullet = bullet_map[b_id]
                 else:
-                    # Fallback matching by exact or partial text
-                    crit_text = crit.get("text", "")
-                    for candidate_id, bullet in bullet_map.items():
-                        if bullet.text == crit_text or (crit_text and crit_text in bullet.text):
-                            b_id = candidate_id
-                            target_bullet = bullet
-                            break
+                    # Match by section and bullet indices if provided
+                    s_idx = getattr(chk, "section_idx", None) if hasattr(chk, "section_idx") else (
+                        chk.get("section_idx") if isinstance(chk, dict) else None
+                    )
+                    b_idx = getattr(chk, "bullet_idx", None) if hasattr(chk, "bullet_idx") else (
+                        chk.get("bullet_idx") if isinstance(chk, dict) else None
+                    )
+                    if s_idx is not None and b_idx is not None:
+                        pos_id = f"sec_{s_idx}_b_{b_idx}"
+                        if pos_id in bullet_map:
+                            b_id = pos_id
+                            target_bullet = bullet_map[pos_id]
+
+                    if not target_bullet:
+                        # Fallback match by exact or partial text
+                        chk_text = ""
+                        if hasattr(chk, "text"):
+                            chk_text = str(chk.text or "")
+                        elif hasattr(chk, "claim"):
+                            chk_text = str(chk.claim or "")
+                        elif isinstance(chk, dict):
+                            chk_text = str(chk.get("text") or chk.get("claim") or "")
+
+                        for candidate_id, candidate_bullet in bullet_map.items():
+                            if candidate_bullet.text == chk_text or (
+                                chk_text and chk_text in candidate_bullet.text
+                            ):
+                                b_id = candidate_id
+                                target_bullet = candidate_bullet
+                                break
 
                 if not b_id or not target_bullet:
                     continue
 
-                fb = crit.get("critique") or crit.get("feedback") or "Fact-check failed."
+                fb = ""
+                if hasattr(chk, "feedback"):
+                    fb = str(chk.feedback or "")
+                elif hasattr(chk, "critique"):
+                    fb = str(chk.critique or "")
+                elif isinstance(chk, dict):
+                    fb = str(chk.get("feedback") or chk.get("critique") or chk.get("reason") or "")
+
+                if not fb:
+                    fb = "Fact-check failed: statement unsupported by profile."
+
                 flagged_items.append(
                     {
                         "bullet_id": b_id,
@@ -250,13 +344,14 @@ class ResumeWriterAgent:
             strict=True,
         )
 
+        # Prompt Caching: Static system instructions first, dynamic data last
         messages = [
             SystemMessage(content=system_content),
             HumanMessage(content=task_content),
         ]
         repair_output: DeltaRepairOutput = structured_llm.invoke(messages)
 
-        # Surgically merge repaired bullets back into draft
+        # Surgically merge repaired bullets back into draft in exact positions
         repaired_map = {rb.bullet_id: rb for rb in repair_output.repaired_bullets}
 
         if "summary" in repaired_map:
@@ -307,8 +402,8 @@ def run(state: GraphState) -> Dict[str, Any]:
         else:
             draft = resume_model
 
-    # Deterministic Guardrail Check
-    validate_draft(draft, profile)
+    # Hard Deterministic Verification
+    validate_writer_output(draft, profile)
 
     return {
         "draft": draft,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,14 +14,20 @@ from careercrew.agents.writer.agent import (
     extract_profile_facts,
     run,
     validate_draft,
+    validate_writer_output,
 )
 from careercrew.schemas.resume import (
     DeltaRepairOutput,
     RepairedBullet,
     TailoredBullet,
     TailoredResume,
+    TailoredSection,
 )
-from careercrew.tools.docx_export import convert_docx_to_pdf, export_to_docx
+from careercrew.tools.docx_export import (
+    convert_docx_to_pdf,
+    export_to_docx,
+    generate_resume_docx,
+)
 
 FIXTURE_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "tailored_resume.json"
 
@@ -90,7 +97,7 @@ def sample_draft() -> TailoredResume:
 
 
 # ==============================================================================
-# 1. Schema & Invariant Tests
+# 1. Schema & Strict-Mode Compliance Tests
 # ==============================================================================
 
 
@@ -104,6 +111,24 @@ def test_schema_extra_forbid():
         )
 
 
+def test_schema_no_defaults_and_null_compatibility():
+    """Verify that optional fields accept nulls and require explicit assignment."""
+    section = TailoredSection(
+        section_name="Projects",
+        organization=None,
+        role_title=None,
+        date_range=None,
+        bullets=[TailoredBullet(text="Built agentic workflow.", source_ids=["exp1_b1"])],
+    )
+    assert section.organization is None
+    assert section.role_title is None
+    assert section.date_range is None
+
+    # Missing required field must raise ValidationError (no hidden default)
+    with pytest.raises(ValidationError):
+        TailoredSection(section_name="Projects")  # type: ignore
+
+
 def test_extract_profile_facts_recursive(sample_profile):
     """Ensure recursive fact extraction gathers all valid IDs and text."""
     facts = extract_profile_facts(sample_profile)
@@ -115,34 +140,35 @@ def test_extract_profile_facts_recursive(sample_profile):
 
 
 # ==============================================================================
-# 2. Deterministic Guardrail Tests
+# 2. Hard Deterministic Verification Tests
 # ==============================================================================
 
 
-def test_validate_draft_success(sample_draft, sample_profile):
+def test_validate_writer_output_success(sample_draft, sample_profile):
     """Valid draft passes without error."""
+    validate_writer_output(sample_draft, sample_profile)
     validate_draft(sample_draft, sample_profile)
 
 
-def test_validate_draft_empty_source_ids(sample_draft, sample_profile):
+def test_validate_writer_output_empty_source_ids(sample_draft, sample_profile):
     """Fails deterministically when any bullet has empty source_ids."""
     sample_draft.sections[0].bullets[0].source_ids = []
     with pytest.raises(ValueError, match="empty source_ids"):
-        validate_draft(sample_draft, sample_profile)
+        validate_writer_output(sample_draft, sample_profile)
 
 
-def test_validate_draft_empty_summary_source_ids(sample_draft, sample_profile):
+def test_validate_writer_output_empty_summary_source_ids(sample_draft, sample_profile):
     """Fails deterministically when summary has empty source_ids."""
     sample_draft.summary.source_ids = []
     with pytest.raises(ValueError, match="empty source_ids"):
-        validate_draft(sample_draft, sample_profile)
+        validate_writer_output(sample_draft, sample_profile)
 
 
-def test_validate_draft_unknown_source_id(sample_draft, sample_profile):
+def test_validate_writer_output_hallucinated_id(sample_draft, sample_profile):
     """Fails deterministically when referencing an ungrounded hallucinated ID."""
     sample_draft.sections[0].bullets[0].source_ids = ["hallucinated_id_999"]
-    with pytest.raises(ValueError, match="invalid source_id 'hallucinated_id_999'"):
-        validate_draft(sample_draft, sample_profile)
+    with pytest.raises(ValueError, match="hallucinated source_id 'hallucinated_id_999'"):
+        validate_writer_output(sample_draft, sample_profile)
 
 
 # ==============================================================================
@@ -180,25 +206,52 @@ def test_run_initial_draft_round_0(sample_profile, sample_draft):
 # ==============================================================================
 
 
+def test_delta_repair_bypasses_when_critique_passed(sample_profile, sample_draft):
+    """When critique.passed is True, regeneration is bypassed and draft returns unchanged."""
+    mock_llm = MagicMock()
+
+    critique = {
+        "passed": True,
+        "claim_checks": [],
+    }
+
+    state = {
+        "profile": sample_profile,
+        "job": {"title": "Staff AI Engineer", "company": "Anthropic"},
+        "gap": {},
+        "round": 1,
+        "critique": critique,
+        "draft": sample_draft,
+        "llm": mock_llm,
+    }
+
+    result = run(state)
+
+    # LLM must NOT be called when critique passes
+    mock_llm.with_structured_output.assert_not_called()
+    assert result["round"] == 2
+    assert result["draft"] == sample_draft
+
+
 def test_run_delta_repair_preserves_supported_bullets(sample_profile, sample_draft):
     """Critic rejection isolates only flagged bullets and preserves supported bullets untouched."""
-    # sec_0_b_0 is supported; sec_0_b_1 is unsupported
     original_supported_text = sample_draft.sections[0].bullets[0].text
     original_supported_ids = sample_draft.sections[0].bullets[0].source_ids.copy()
 
     critique = {
-        "bullets": [
+        "passed": False,
+        "claim_checks": [
             {
                 "bullet_id": "sec_0_b_0",
                 "status": "supported",
-                "critique": "Factually verified.",
+                "feedback": "Factually verified.",
             },
             {
                 "bullet_id": "sec_0_b_1",
                 "status": "unsupported",
-                "critique": "Candidate did not build a benchmark framework across 50 nodes.",
+                "feedback": "Candidate did not build a benchmark framework across 50 nodes.",
             },
-        ]
+        ],
     }
 
     repaired_output = DeltaRepairOutput(
@@ -248,10 +301,10 @@ def test_run_delta_repair_preserves_supported_bullets(sample_profile, sample_dra
 # ==============================================================================
 
 
-def test_docx_export(tmp_path, sample_draft, sample_profile):
-    """Generates valid .docx file matching ATS specifications."""
+def test_generate_resume_docx_full(tmp_path, sample_draft, sample_profile):
+    """Generates valid .docx file matching ATS specifications with full metadata."""
     out_docx = tmp_path / "tailored_resume.docx"
-    result_path = export_to_docx(
+    result_path = generate_resume_docx(
         resume=sample_draft,
         output_path=out_docx,
         profile_meta=sample_profile["candidate"],
@@ -261,7 +314,6 @@ def test_docx_export(tmp_path, sample_draft, sample_profile):
     assert result_path.exists()
     assert result_path.stat().st_size > 0
 
-    # Read back through python-docx to verify document structure
     import docx
 
     doc = docx.Document(str(result_path))
@@ -272,6 +324,42 @@ def test_docx_export(tmp_path, sample_draft, sample_profile):
     assert "[src: exp1_b1]" in full_text
 
 
+def test_generate_resume_docx_missing_optional_fields(tmp_path, sample_profile):
+    """Handles missing optional fields (None organization, role_title, date_range) cleanly."""
+    resume_sparse = TailoredResume(
+        version=1,
+        summary=TailoredBullet(
+            text="Experienced AI developer with background in distributed algorithms.",
+            source_ids=["sum_1"],
+        ),
+        sections=[
+            TailoredSection(
+                section_name="Projects",
+                organization=None,
+                role_title=None,
+                date_range=None,
+                bullets=[
+                    TailoredBullet(
+                        text="Created open source LLM benchmark harness.",
+                        source_ids=["exp1_b2"],
+                    )
+                ],
+            )
+        ],
+    )
+
+    out_docx = tmp_path / "sparse_resume.docx"
+    result_path = export_to_docx(
+        resume=resume_sparse,
+        output_path=out_docx,
+        profile_meta=None,
+        include_source_tags=False,
+    )
+
+    assert result_path.exists()
+    assert result_path.stat().st_size > 0
+
+
 def test_convert_docx_to_pdf_missing_binary(tmp_path):
     """Raises FileNotFoundError when LibreOffice is not installed/found."""
     dummy_docx = tmp_path / "test.docx"
@@ -280,6 +368,28 @@ def test_convert_docx_to_pdf_missing_binary(tmp_path):
     with patch("careercrew.tools.docx_export.find_libreoffice_binary", return_value=None):
         with pytest.raises(FileNotFoundError, match="LibreOffice headless binary"):
             convert_docx_to_pdf(dummy_docx, output_dir=tmp_path)
+
+
+def test_convert_docx_to_pdf_called_process_error(tmp_path):
+    """Captures subprocess.CalledProcessError and raises RuntimeError with diagnostics."""
+    dummy_docx = tmp_path / "test.docx"
+    dummy_docx.write_bytes(b"PK0304")
+
+    def mock_subprocess_error(cmd, **kwargs):
+        raise subprocess.CalledProcessError(
+            returncode=1,
+            cmd=cmd,
+            output="Error output",
+            stderr="LibreOffice crash: font configuration error",
+        )
+
+    with patch(
+        "careercrew.tools.docx_export.find_libreoffice_binary",
+        return_value="/usr/bin/libreoffice",
+    ):
+        with patch("subprocess.run", side_effect=mock_subprocess_error):
+            with pytest.raises(RuntimeError, match="LibreOffice crash"):
+                convert_docx_to_pdf(dummy_docx, output_dir=tmp_path)
 
 
 def test_convert_docx_to_pdf_successful_invocation(tmp_path):

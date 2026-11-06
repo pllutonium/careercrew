@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
 class StrictBaseModel(BaseModel):
@@ -14,9 +14,10 @@ class StrictBaseModel(BaseModel):
     - extra = "forbid"
     - No dynamic dicts
     - No field-level constraints (e.g., min_length, max_length) that violate strict mode.
+    - No default assignments on structured output schemas.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = {"extra": "forbid"}
 
 
 class TailoredBullet(StrictBaseModel):
@@ -36,21 +37,17 @@ class TailoredSection(StrictBaseModel):
     section_name: str = Field(
         description="Name of the section, e.g., 'Work Experience' or 'Education'."
     )
-    organization: Optional[str] = Field(
-        default=None,
-        description="Company, university, or client organization name.",
+    organization: Union[str, None] = Field(
+        description="Company, university, or client organization name (null if not applicable)."
     )
-    role_title: Optional[str] = Field(
-        default=None,
-        description="Job title, degree, or role designation.",
+    role_title: Union[str, None] = Field(
+        description="Job title, degree, or role designation (null if not applicable)."
     )
-    date_range: Optional[str] = Field(
-        default=None,
-        description="Employment or degree timeframe (e.g., '2021 - 2024').",
+    date_range: Union[str, None] = Field(
+        description="Employment or degree timeframe (null if not applicable)."
     )
     bullets: List[TailoredBullet] = Field(
-        default_factory=list,
-        description="Tailored bullet points belonging to this section.",
+        description="Tailored bullet points belonging to this section."
     )
 
 
@@ -58,15 +55,13 @@ class TailoredResume(StrictBaseModel):
     """Complete tailored resume draft produced by the Resume Writer Agent."""
 
     version: int = Field(
-        default=1,
-        description="Schema or iteration version number.",
+        description="Schema or iteration version number."
     )
     summary: TailoredBullet = Field(
         description="Tailored executive summary with explicit source_ids grounding."
     )
     sections: List[TailoredSection] = Field(
-        default_factory=list,
-        description="List of tailored sections (Experience, Projects, Education, etc.).",
+        description="List of tailored sections (Experience, Projects, Education, etc.)."
     )
 
 
@@ -88,6 +83,5 @@ class DeltaRepairOutput(StrictBaseModel):
     """Structured LLM output for surgical repair of critic-rejected bullets."""
 
     repaired_bullets: List[RepairedBullet] = Field(
-        default_factory=list,
-        description="List of surgically repaired bullets mapped to their identifiers.",
+        description="List of surgically repaired bullets mapped to their identifiers."
     )

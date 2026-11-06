@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -15,6 +16,8 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 from careercrew.schemas.resume import TailoredResume, TailoredSection
+
+logger = logging.getLogger(__name__)
 
 
 def _set_cell_margins(cell, top=0, bottom=0, left=0, right=0):
@@ -30,7 +33,7 @@ def _set_cell_margins(cell, top=0, bottom=0, left=0, right=0):
 
 
 def _add_bottom_border(paragraph, color: str = "2B4C7E", sz: str = "12"):
-    """Adds a sleek bottom accent border to section headings."""
+    """Adds a sleek bottom accent border to section headings without namespace corruption."""
     pPr = paragraph._element.get_or_add_pPr()
     pBdr = OxmlElement("w:pBdr")
     bottom = OxmlElement("w:bottom")
@@ -42,7 +45,7 @@ def _add_bottom_border(paragraph, color: str = "2B4C7E", sz: str = "12"):
     pPr.append(pBdr)
 
 
-def export_to_docx(
+def generate_resume_docx(
     resume: TailoredResume,
     output_path: Union[str, Path],
     profile_meta: Optional[Dict[str, Any]] = None,
@@ -52,7 +55,7 @@ def export_to_docx(
     """Exports a TailoredResume instance to an ATS-optimized Microsoft Word (.docx) document.
 
     Formatting specifications:
-    - 0.65-inch margins (top, bottom, left, right)
+    - 0.65-inch margins (46.8 pt) across all sections
     - Font hierarchy:
         * Candidate Name: 16pt Bold
         * Contact: 9pt Muted
@@ -66,12 +69,12 @@ def export_to_docx(
 
     doc = docx.Document()
 
-    # Configure 0.65-inch margins across all sections
+    # Configure exact 0.65-inch (46.8 pt) margins across all sections
     for sec in doc.sections:
-        sec.top_margin = Inches(0.65)
-        sec.bottom_margin = Inches(0.65)
-        sec.left_margin = Inches(0.65)
-        sec.right_margin = Inches(0.65)
+        sec.top_margin = Pt(46.8)
+        sec.bottom_margin = Pt(46.8)
+        sec.left_margin = Pt(46.8)
+        sec.right_margin = Pt(46.8)
 
     meta = profile_meta or {}
     name = meta.get("name") or "CANDIDATE NAME"
@@ -131,6 +134,10 @@ def export_to_docx(
     return out_file
 
 
+# Backwards compatibility alias
+export_to_docx = generate_resume_docx
+
+
 def _render_section_heading(doc: docx.Document, heading_text: str, font_name: str) -> None:
     """Renders a section title with 11pt bold typography and a bottom border line."""
     p_head = doc.add_paragraph()
@@ -153,7 +160,9 @@ def _render_section_content(
     font_name: str,
     include_source_tags: bool,
 ) -> None:
-    """Renders the organization, role title, dates, and bullets for a section."""
+    """Renders the organization, role title, dates, and bullets for a section,
+    gracefully handling missing optional fields.
+    """
     has_meta = bool(section.organization or section.role_title or section.date_range)
     if has_meta:
         # Use single-column paragraph with right tab stop for 100% ATS parser compatibility
@@ -179,14 +188,15 @@ def _render_section_content(
             r_org.font.color.rgb = RGBColor(51, 65, 85)
 
         if section.date_range:
-            r_date = p_meta.add_run(f"\t{section.date_range}")
+            prefix = "\t" if (section.role_title or section.organization) else ""
+            r_date = p_meta.add_run(f"{prefix}{section.date_range}")
             r_date.font.name = font_name
             r_date.font.size = Pt(9.5)
             r_date.font.italic = True
             r_date.font.color.rgb = RGBColor(100, 116, 139)
 
     # Render Bullets
-    for bullet in section.bullets:
+    for bullet in (section.bullets or []):
         p_bullet = doc.add_paragraph(style="List Bullet")
         p_bullet.paragraph_format.space_before = Pt(0)
         p_bullet.paragraph_format.space_after = Pt(2)
@@ -242,6 +252,7 @@ def convert_docx_to_pdf(
             "LibreOffice headless binary ('libreoffice' or 'soffice') "
             "was not found on PATH or common installation paths."
         )
+        logger.error(msg)
         raise FileNotFoundError(msg)
 
     cmd = [
@@ -261,25 +272,29 @@ def convert_docx_to_pdf(
             stderr=subprocess.PIPE,
             text=True,
             timeout=timeout_seconds,
-            check=False,
+            check=True,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"Headless PDF conversion timed out after {timeout_seconds} seconds."
-        ) from exc
-
-    if result.returncode != 0:
+    except subprocess.CalledProcessError as exc:
+        stderr_msg = exc.stderr.strip() if exc.stderr else "No stderr output"
+        stdout_msg = exc.stdout.strip() if exc.stdout else "No stdout output"
         msg = (
-            f"LibreOffice headless conversion failed (exit code {result.returncode}): "
-            f"{result.stderr.strip()}"
+            f"LibreOffice headless conversion failed with exit code {exc.returncode}.\n"
+            f"STDOUT: {stdout_msg}\n"
+            f"STDERR: {stderr_msg}"
         )
-        raise RuntimeError(msg)
+        logger.error(msg)
+        raise RuntimeError(msg) from exc
+    except subprocess.TimeoutExpired as exc:
+        msg = f"Headless PDF conversion timed out after {timeout_seconds} seconds."
+        logger.error(msg)
+        raise RuntimeError(msg) from exc
 
     if not expected_pdf.exists():
         msg = (
-            f"LibreOffice conversion exited successfully but expected PDF was not found at "
-            f"{expected_pdf}"
+            f"LibreOffice conversion completed (output: {result.stdout.strip()}) "
+            f"but expected PDF was not found at {expected_pdf}"
         )
+        logger.error(msg)
         raise RuntimeError(msg)
 
     return expected_pdf
