@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "summary": {
+    "text": "Senior ML Infrastructure Engineer with 6+ years orchestrating distributed deep learning pipelines and high-throughput model serving.",
+    "source_ids": ["sum_1", "exp1_b1"]
+  },
+  "sections": [
+    {
+      "section_name": "Work Experience",
+      "organization": "HyperScale AI",
+      "role_title": "Senior AI Systems Engineer",
+      "date_range": "2021 - Present",
+      "bullets": [
+        {
+          "text": "Engineered distributed LLM inference pipeline serving 2M daily requests, slashing p99 latency by 35% through vLLM and TensorRT-LLM optimizations.",
+          "source_ids": ["exp1_b1"]
+        },
+        {
+          "text": "Architected automated model evaluation framework running nightly regression benchmarks across 50+ GPU cluster nodes.",
+          "source_ids": ["exp1_b2"]
+        }
+      ]
+    },
+    {
+      "section_name": "Education",
+      "organization": "Carnegie Mellon University",
+      "role_title": "B.S. in Computer Science",
+      "date_range": "2015 - 2019",
+      "bullets": [
+        {
+          "text": "Graduated with University Honors; conducted undergraduate research in distributed consensus protocols.",
+          "source_ids": ["edu_1"]
+        }
+      ]
+    }
+  ]
+}
